@@ -55,13 +55,19 @@ class Wp_Scss {
 
       //Compiler - Takes scss $in and writes compiled css to $out file
       // catches errors and puts them the object's compiled_errors property
-      function compiler($in, $out, $instance) {
+      function compiler($in, $outPath, $outName, $instance) {
         global $scssc, $cache;
 
         if (is_writable($cache)) {
           try {
               $css = $scssc->compile(file_get_contents($in));
-              file_put_contents($cache.basename($out), $css);
+              if($outPath && !is_dir($cache.$outPath)) {
+                $oldmask = umask(0); // remove mask to set correct rights
+                mkdir($cache.$outPath , 0755, true); // create directories
+                umask($oldmask); // reset mask
+              }
+              
+              file_put_contents($cache.$outPath.$outName, $css);
           } catch (Exception $e) {
               $errors = array (
                 'file' => basename($in),
@@ -79,28 +85,39 @@ class Wp_Scss {
       }
 
       $input_files = array();
+      $di = new RecursiveDirectoryIterator($this->scss_dir, FilesystemIterator::SKIP_DOTS);
+      $Iterator = new RecursiveIteratorIterator($di, RecursiveIteratorIterator::CHILD_FIRST);
+      
       // Loop through directory and get .scss file that do not start with '_'
-      foreach(new DirectoryIterator($this->scss_dir) as $file) {
+      foreach($Iterator as $file) {
         if (substr($file, 0, 1) != "_" && pathinfo($file->getFilename(), PATHINFO_EXTENSION) == 'scss') {
-          array_push($input_files, $file->getFilename());
+          array_push($input_files, $file);
         }
       }
 
       // For each input file, find matching css file and compile
       foreach ($input_files as $scss_file) {
-        $input = $this->scss_dir.$scss_file;
-        $outputName = preg_replace("/\.[^$]*/",".css", $scss_file);
-        $output = $this->css_dir.$outputName;
-
-        compiler($input, $output, $this);
+        $input = $scss_file->getPathname();
+        $outputName = preg_replace("/\.[^$]*/",".css", $scss_file->getFilename());
+        $relativePath = str_replace($this->scss_dir, "", $scss_file->getPath().'/');
+        compiler($input, $relativePath, $outputName, $this);
       }
 
       if (count($this->compile_errors) < 1) {
         if  ( is_writable($this->css_dir) ) {
+          // Empty output directory
+          $di = new RecursiveDirectoryIterator($this->css_dir, FilesystemIterator::SKIP_DOTS);
+          $ri = new RecursiveIteratorIterator($di, RecursiveIteratorIterator::CHILD_FIRST);
+          foreach ( $ri as $file ) {
+              $file->isDir() ?  rmdir($file) : unlink($file);
+          }
+          
+          // Move cached files to output directory
           foreach (new DirectoryIterator($cache) as $cache_file) {
-            if ( pathinfo($cache_file->getFilename(), PATHINFO_EXTENSION) == 'css') {
-              file_put_contents($this->css_dir.$cache_file, file_get_contents($cache.$cache_file));
-              unlink($cache.$cache_file->getFilename()); // Delete file on successful write
+            if (!$cache_file->isDot()) {
+              $relativePathName = str_replace($cache, "", $cache_file->getPathname());
+              $outputPathName = $this->css_dir.$relativePathName;
+              rename($cache_file->getPathname(), $this->css_dir.$cache_file);
             }
           }
         } else {
@@ -175,13 +192,14 @@ class Wp_Scss {
    *                      so it can be used in a url, not path
    */
   public function enqueue_files($css_folder) {
-
-      foreach( new DirectoryIterator($this->css_dir) as $stylesheet ) {
+      $di = new RecursiveDirectoryIterator($this->css_dir, FilesystemIterator::SKIP_DOTS);
+      $Iterator = new RecursiveIteratorIterator($di, RecursiveIteratorIterator::CHILD_FIRST);
+      
+      foreach( $Iterator as $stylesheet ) {
         if ( pathinfo($stylesheet->getFilename(), PATHINFO_EXTENSION) == 'css' ) {
           $name = $stylesheet->getBasename('.css') . '-style';
           $uri = get_stylesheet_directory_uri().$css_folder.$stylesheet->getFilename();
           $ver = $stylesheet->getMTime();
-
 
           wp_register_style(
             $name,
